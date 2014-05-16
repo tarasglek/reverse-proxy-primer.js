@@ -3,7 +3,7 @@
     "aws":{
         "accessKeyId": "my_arbitrary_key",
         "secretAccessKey": "this_is_ignored_for_now",
-        "endpoint": "127.0.0.1:8888",
+        "endpoint": "127.0.0.1:8080",
         "s3ForcePathStyle":true,
         "sslEnabled":false
     }
