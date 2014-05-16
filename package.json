@@ -1,0 +1,10 @@
+{
+  "name": "reverse-proxy-primer",
+  "description": "",
+  "version": "0.0.1",
+  "license": "BSD",
+  "run": "index.js",
+  "dependencies": {
+    "aws-sdk": "*"
+  }
+}

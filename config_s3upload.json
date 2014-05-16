@@ -1,9 +1,0 @@
-{
-    "aws":{
-        "accessKeyId": "my arbitrary key",
-        "secretAccessKey": "my arbitrary pw",
-        "endpoint": "127.0.0.1:8888",
-        "s3ForcePathStyle":true,
-        "sslEnabled":false
-    }
-}
