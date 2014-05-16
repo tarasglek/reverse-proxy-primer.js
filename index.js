@@ -45,6 +45,7 @@ function handleGet(request, response) {
 
 http.createServer(function(request, response) {
   console.log(""+Object.keys(objects).length + " objects in memory");
+  console.log(request.method, request.url)
   console.log(request.headers);
   if (request.method == "PUT") {
     handleUpload(request, response);
