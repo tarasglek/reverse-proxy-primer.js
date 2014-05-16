@@ -86,7 +86,7 @@ function handlePut(request, response) {
 function handleGet(request, response) {
   var pathname = url.parse(request.url).pathname;
   if (!(pathname in objects))
-    return fail(response, 404, "Can't find " + path);
+    return fail(response, 404, "Can't find " + pathname);
   var buf = objects[pathname];
   response.writeHead(200, {"Content-Length":buf.length});
   response.write(buf);
