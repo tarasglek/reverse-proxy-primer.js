@@ -5,9 +5,11 @@ const url = require("url")
 var objects = {};
 var config = JSON.parse(fs.readFileSync(process.argv[2]))
 
+// make sure errors are not cached
 function fail(response, code, message) {
   response.writeHead(code, {"Content-Type": "text/plain",
-                            "Content-Length": message.length
+                            "Content-Length": message.length,
+                            "Cache-Control": "private, max-age=0",
                            });
   response.write(message);
   response.end();
@@ -120,8 +122,10 @@ function handleGet(request, response) {
   if (!(pathname in objects))
     return fail(response, 404, "Can't find " + pathname);
   var buf = objects[pathname];
-  response.writeHead(200, {"Content-Length":buf.length});
-  response.write(buf);
+  response.writeHead(200, {"Content-Length": buf.length,
+                           "Cache-Control": "public, max-age=31556926"});
+  if (request.method == "GET")
+    response.write(buf);
   response.end();
 }
 
@@ -132,7 +136,7 @@ http.createServer(function(request, response) {
   if (request.method == "PUT") {
     handlePut(request, response);
     return;
-  } else if (request.method == "GET") {
+  } else if (request.method == "GET" || request.method == "HEAD") {
     return handleGet(request, response);
   } else {
     console.log("what is this method:"+request.method);
