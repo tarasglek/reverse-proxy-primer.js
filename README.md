@@ -20,3 +20,11 @@ nodejs s3upload.js config/varnish_s3upload.json README.md
 #verify varnish cache
 curl http://localhost:6081/foo-bucket/README.md
 
+# Problems
+
+* Varnish behaves weirdly(eg goes back to server) if there is a prior request that 404ed
+* Seems to depend on headers matching exactly
+* Eg 'Accept: */*' matters
+* Also not having it ^
+One solution is to use the control protocol to wipe the prior 404 entries.
+Solution is probly to strip weird headers and re-ask varnish for the copy it has

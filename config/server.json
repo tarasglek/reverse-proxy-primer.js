@@ -8,6 +8,7 @@
         }
      ],
     "varnish": {
-        "endpoint": "http://localhost:6081"
+        "hostname": "localhost",
+        "port":6081
     }
 }

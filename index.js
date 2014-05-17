@@ -12,6 +12,7 @@ function fail(response, code, message) {
                             "Cache-Control": "private, max-age=0",
                            });
   response.write(message);
+  console.log("fail", code);
   response.end();
 }
 
@@ -38,8 +39,16 @@ function extract_key_from_auth(auth) {
 }
 
 function cache(pathname) {
-  var vurl = config.varnish.endpoint + pathname;
-  var req = http.request(vurl, function(res) {
+  var options = { 
+    "hostname":config.varnish.hostname,
+    "port":config.varnish.port,
+    "path":pathname,
+    "headers":{
+//      "Accept-Encoding":"gzip"
+      "Accept":"*/*"
+    }
+  }
+  var req = http.request(options, function(res) {
     var content_length = res.headers['content-length'] * 1
     var buf = new Buffer(content_length); 
     var pos = 0;
@@ -127,6 +136,7 @@ function handleGet(request, response) {
   if (request.method == "GET")
     response.write(buf);
   response.end();
+  console.log("sent", pathname);
 }
 
 http.createServer(function(request, response) {
