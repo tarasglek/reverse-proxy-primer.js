@@ -1,5 +1,9 @@
 # Usage
 ```
+
+# install dependencies
+npm install
+
 # Launch s3 compat layer
 # by default this listens on port 8080. So varnish works without config changes
 nodejs index.js config/server.json
