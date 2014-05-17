@@ -6,7 +6,9 @@ var objects = {};
 var config = JSON.parse(fs.readFileSync(process.argv[2]))
 
 function fail(response, code, message) {
-  response.writeHead(code, {"Content-Type": "text/plain"});
+  response.writeHead(code, {"Content-Type": "text/plain",
+                            "Content-Length": message.length
+                           });
   response.write(message);
   response.end();
 }
@@ -14,11 +16,11 @@ function fail(response, code, message) {
 function xml_fail(response, code, message) {
   var xml = [
     '<?xml version="1.0" encoding="UTF-8"?>',
-    '<Error><Code>Fail Code ' + code + '</Code>',
-    '<Message>'+ message+ '</Message>',
+    '<Error><Code>Fail Code ', code, '</Code>',
+    '<Message>', message, '</Message>',
     '<ArgumentValue>AWS xxxxxxxxxxxxxxxxxxxx:AWS foo:goo</ArgumentValue><ArgumentName>Authorization</ArgumentName><RequestId>DA4F9D654D285264</RequestId><HostId>6Rj2t4/EOBR2mDHR3Hk74zMMrnOX3PcU4uX659pzYriZKilfyEpjRdAqG/l3h81grIM+UeICkf0=</HostId></Error>'
   ]
-  fail(response, code, xml.join("\n"));
+  fail(response, code, xml.join(""));
 }
 
 function extract_key_from_auth(auth) {
@@ -31,6 +33,35 @@ function extract_key_from_auth(auth) {
   if (b.length != 2)
     return null;
   return b[0];
+}
+
+function cache(pathname) {
+  var vurl = config.varnish.endpoint + pathname;
+  var req = http.request(vurl, function(res) {
+    var content_length = res.headers['content-length'] * 1
+    var buf = new Buffer(content_length); 
+    var pos = 0;
+
+    res.on('data', function (chunk) {
+      chunk.copy(buf, pos);
+      pos += chunk.length;
+    });
+    
+    res.on('end', function () {
+      if (buf.toString() == objects[pathname].toString()) {
+        console.log("Cached " + pathname);
+        delete objects[pathname];
+      } else {
+        console.log("Failed to cache " + pathname);
+      }
+    });
+  });
+
+  req.on('error', function(e) {
+    console.log('problem with request: ' + e.message);
+  });
+
+  req.end();
 }
 
 function handlePut(request, response) {
@@ -80,6 +111,7 @@ function handlePut(request, response) {
     response.writeHead(200, {"Content-Length":0});
     objects[pathname] = buf;
     response.end();
+    cache(pathname);
   });
 }
 
@@ -91,9 +123,6 @@ function handleGet(request, response) {
   response.writeHead(200, {"Content-Length":buf.length});
   response.write(buf);
   response.end();
-  console.log(Object.keys(objects))
-  delete objects[pathname];
-  console.log(Object.keys(objects))
 }
 
 http.createServer(function(request, response) {

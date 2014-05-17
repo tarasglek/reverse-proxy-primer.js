@@ -6,5 +6,8 @@
             "bucket":"foo-bucket",
             "accessKeyId": "my_arbitrary_key"
         }
-     ]
+     ],
+    "varnish": {
+        "endpoint": "http://localhost:6081"
+    }
 }
