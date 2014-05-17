@@ -1,3 +1,8 @@
+# Revese Caching
+This node app lives behind a varnish proxy and populates the varnish cache with S3 put requests
+
+For now uploads are cached in memory. On failure to upload, no retries are attempted.
+
 # Usage
 ```
 
@@ -25,6 +30,9 @@ curl http://localhost:6081/foo-bucket/README.md
 * Varnish behaves weirdly(eg goes back to server) if there is a prior request that 404ed
 * Seems to depend on headers matching exactly
 * Eg 'Accept: */*' matters
-* Also not having it ^
-One solution is to use the control protocol to wipe the prior 404 entries.
-Solution is probly to strip weird headers and re-ask varnish for the copy it has
+* Solution to this and other issues is forced expiry for warming cache. See Configuration section below
+
+
+# Configuration
+
+https://www.varnish-cache.org/trac/wiki/VCLExampleHashAlwaysMiss

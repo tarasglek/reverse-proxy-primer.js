@@ -9,7 +9,8 @@ var config = JSON.parse(fs.readFileSync(process.argv[2]))
 function fail(response, code, message) {
   response.writeHead(code, {"Content-Type": "text/plain",
                             "Content-Length": message.length,
-                            "Cache-Control": "private, max-age=0",
+                            // X-REFRESH takes care of this for 404s that get replaced with content..eg it's ok to cache 404s =D
+                            // "Cache-Control": "private, max-age=0",
                            });
   response.write(message);
   console.log("fail", code);
@@ -38,14 +39,15 @@ function extract_key_from_auth(auth) {
   return b[0];
 }
 
-function cache(pathname) {
+function cache(pathname, cached_entry, callback) {
   var options = { 
-    "hostname":config.varnish.hostname,
+    "host":config.varnish.host,
     "port":config.varnish.port,
     "path":pathname,
     "headers":{
-//      "Accept-Encoding":"gzip"
-      "Accept":"*/*"
+      "Accept-Encoding":"gzip",
+      "Accept":"*/*",
+      "X-REFRESH": "DOIT" //magic varnish setting
     }
   }
   var req = http.request(options, function(res) {
@@ -59,11 +61,13 @@ function cache(pathname) {
     });
     
     res.on('end', function () {
-      if (buf.toString() == objects[pathname].toString()) {
+      if (buf.toString() == cached_entry.buffer.toString()) {
         console.log("Cached " + pathname);
-        delete objects[pathname];
+        callback(null, null);
       } else {
-        console.log("Failed to cache " + pathname);
+        var msg = "Failed to cache " + pathname;
+        console.log(msg);
+        callback(new Error(msg));
       }
     });
   });
@@ -119,10 +123,21 @@ function handlePut(request, response) {
     pos += chunk.length;
   }) 
   request.on('end', function() {
-    response.writeHead(200, {"Content-Length":0});
-    objects[pathname] = buf;
-    response.end();
-    cache(pathname);
+    var cached_entry = {"headers":{}, buffer:buf}
+    for (var header in request.headers) {
+      if (header.substr(0,8) == "content-")
+        cached_entry.headers[header] = request.headers[header]
+    }
+    objects[pathname] = cached_entry;
+    cache(pathname, cached_entry, function (err) {
+      if (!err) {
+        response.writeHead(200, {"Content-Length":0});
+        response.end();
+      } else {
+        fail(response, 500, err.toString());
+      }
+      delete objects[pathname]
+    });
   });
 }
 
@@ -130,11 +145,14 @@ function handleGet(request, response) {
   var pathname = url.parse(request.url).pathname;
   if (!(pathname in objects))
     return fail(response, 404, "Can't find " + pathname);
-  var buf = objects[pathname];
-  response.writeHead(200, {"Content-Length": buf.length,
-                           "Cache-Control": "public, max-age=31556926"});
+  var cached_entry = objects[pathname];
+  var headers = {"Cache-Control": "public, max-age=31556926"};
+  for (var header in cached_entry.headers)
+    headers[header] = cached_entry.headers[header]
+
+  response.writeHead(200, headers);
   if (request.method == "GET")
-    response.write(buf);
+    response.write(cached_entry.buffer);
   response.end();
   console.log("sent", pathname);
 }

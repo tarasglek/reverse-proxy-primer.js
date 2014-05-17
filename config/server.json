@@ -8,7 +8,7 @@
         }
      ],
     "varnish": {
-        "hostname": "localhost",
+        "host": "localhost",
         "port":6081
     }
 }
