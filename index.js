@@ -5,26 +5,37 @@ const url = require("url")
 var objects = {};
 var config = JSON.parse(fs.readFileSync(process.argv[2]))
 
+function logentry(request, code, message) {
+  var timestamp = (new Date()).toISOString();
+  return request.connection.remoteAddress + " " + timestamp + " \""
+    + request.method + " " + request.url + " " + request.headers["user-agent"]
+    + "\" " +  code + " \"" + message + "\""
+}
+
 // make sure errors are not cached
-function fail(response, code, message) {
+function fail(request, response, code, message, rawmessage) {
   response.writeHead(code, {"Content-Type": "text/plain",
                             "Content-Length": message.length,
                             // X-REFRESH takes care of this for 404s that get replaced with content..eg it's ok to cache 404s =D
                             // "Cache-Control": "private, max-age=0",
                            });
   response.write(message);
-  console.log("fail", code);
+
+  if (!rawmessage)
+    rawmessage = message;
+
+  console.error(logentry(request, code, rawmessage));
   response.end();
 }
 
-function xml_fail(response, code, message) {
+function xml_fail(request, response, code, message) {
   var xml = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<Error><Code>Fail Code ', code, '</Code>',
     '<Message>', message, '</Message>',
     '<ArgumentValue>AWS xxxxxxxxxxxxxxxxxxxx:AWS foo:goo</ArgumentValue><ArgumentName>Authorization</ArgumentName><RequestId>DA4F9D654D285264</RequestId><HostId>6Rj2t4/EOBR2mDHR3Hk74zMMrnOX3PcU4uX659pzYriZKilfyEpjRdAqG/l3h81grIM+UeICkf0=</HostId></Error>'
   ]
-  fail(response, code, xml.join(""));
+  fail(request, response, code, xml.join(""), message);
 }
 
 function extract_key_from_auth(auth) {
@@ -45,8 +56,9 @@ function cache(pathname, cached_entry, callback) {
     "port":config.varnish.port,
     "path":pathname,
     "headers":{
-      "Accept-Encoding":"gzip",
-      "Accept":"*/*",
+      "Accept-Encoding": "gzip",
+      "Accept": "*/*",
+      "user-agent": "reverse.proxy.js",
       "X-REFRESH": "DOIT" //magic varnish setting
     }
   }
@@ -61,19 +73,18 @@ function cache(pathname, cached_entry, callback) {
     });
     
     res.on('end', function () {
-      if (buf.toString() == cached_entry.buffer.toString()) {
-        console.log("Cached " + pathname);
+      // per http://stackoverflow.com/questions/13790259/buffer-comparison-in-node-js
+      if (buf >= cached_entry.buffer && buf <= cached_entry.buffer) {
         callback(null, null);
       } else {
-        var msg = "Failed to cache " + pathname;
-        console.log(msg);
+        var msg = "Failed to verify cache " + pathname;
         callback(new Error(msg));
       }
     });
   });
 
   req.on('error', function(e) {
-    console.log('problem with request: ' + e.message);
+    callback(new Error('problem with request: ' + e.message));
   });
 
   req.end();
@@ -81,22 +92,22 @@ function cache(pathname, cached_entry, callback) {
 
 function handlePut(request, response) {
   if (!('content-length' in request.headers)) {
-    return xml_fail(response, 500, "Missing content-length header");
+    return xml_fail(request, response, 500, "Missing content-length header");
   }
   if (!('authorization' in request.headers)) {
-    return xml_fail(response, 403, "Forbidden: Missing Authorization header");
+    return xml_fail(request, response, 403, "Forbidden: Missing Authorization header");
   }
   
   var accessKeyId = extract_key_from_auth(request.headers['authorization'].toString());
   if (!accessKeyId)
-    return xml_fail(response, 403, "Forbidden: Can't parse Authorization header");
+    return xml_fail(request, response, 403, "Forbidden: Can't parse Authorization header");
   
   var pathname = url.parse(request.url).pathname;
 
   var a = pathname.split("/");
-  console.log(JSON.stringify(a))
+
   if (a.length < 3)
-    return xml_fail(response, 500, "Missing bucket name");
+    return xml_fail(request, response, 500, "Missing bucket name");
   var bucket_name = a[1];
 
   var bucket_rules = null;
@@ -108,22 +119,21 @@ function handlePut(request, response) {
   })
 
   if (!bucket_rules)
-    return xml_fail(response, 404, "Unknown bucket:" + bucket_name);
+    return xml_fail(request, response, 404, "Unknown bucket:" + bucket_name);
 
-  console.log(JSON.stringify(bucket_rules.accessKeyId,accessKeyId));
   if (bucket_rules.accessKeyId != accessKeyId)
-    return xml_fail(response, 403, "Forbidden: Auth failed");
+    return xml_fail(request, response, 403, "Forbidden: Auth failed");
 
   var content_length = request.headers['content-length'] * 1
   var buf = new Buffer(content_length); 
-  console.log(buf.length)
+  var start_timestamp = Date.now()
   var pos = 0;
   request.on('data', function(chunk) {
     chunk.copy(buf, pos);
     pos += chunk.length;
   }) 
   request.on('end', function() {
-    var cached_entry = {"headers":{}, buffer:buf}
+    var cached_entry = {"headers":{}, buffer:buf, timestamp: start_timestamp}
     for (var header in request.headers) {
       if (header.substr(0,8) == "content-")
         cached_entry.headers[header] = request.headers[header]
@@ -132,9 +142,13 @@ function handlePut(request, response) {
     cache(pathname, cached_entry, function (err) {
       if (!err) {
         response.writeHead(200, {"Content-Length":0});
+        console.log(logentry(request, 200,
+                             cached_entry.headers["content-length"] + "b in " 
+                             + (Date.now() - cached_entry.timestamp) + "ms"));
+
         response.end();
       } else {
-        fail(response, 500, err.toString());
+        fail(request, response, 500, err.toString());
       }
       delete objects[pathname]
     });
@@ -144,7 +158,7 @@ function handlePut(request, response) {
 function handleGet(request, response) {
   var pathname = url.parse(request.url).pathname;
   if (!(pathname in objects))
-    return fail(response, 404, "Can't find " + pathname);
+    return fail(request, response, 404, "Can't find " + pathname);
   var cached_entry = objects[pathname];
   var headers = {"Cache-Control": "public, max-age=31556926"};
   for (var header in cached_entry.headers)
@@ -154,13 +168,12 @@ function handleGet(request, response) {
   if (request.method == "GET")
     response.write(cached_entry.buffer);
   response.end();
-  console.log("sent", pathname);
+  console.log(logentry(request, 200,
+                       cached_entry.headers["content-length"] + "b in " 
+                       + (Date.now() - cached_entry.timestamp) + "ms"));
 }
 
 http.createServer(function(request, response) {
-  console.log(""+Object.keys(objects).length + " objects in memory");
-  console.log(request.method, request.url)
-  console.log(request.headers);
   if (request.method == "PUT") {
     handlePut(request, response);
     return;
@@ -168,7 +181,7 @@ http.createServer(function(request, response) {
     return handleGet(request, response);
   } else {
     console.log("what is this method:"+request.method);
-    fail(response, 500, "what is this method:"+request.method);
+    return fail(request, response, 500, "what is this method:"+request.method);
   }
 }).listen(config.port, config.host);
 
