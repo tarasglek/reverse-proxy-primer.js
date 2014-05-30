@@ -1,6 +1,7 @@
 const http = require("http")
 const fs = require("fs")
 const url = require("url")
+const crypto = require('crypto');
 
 var objects = {};
 var config = JSON.parse(fs.readFileSync(process.argv[2]))
@@ -50,6 +51,24 @@ function extract_key_from_auth(auth) {
   return b[0];
 }
 
+// do the unix trick of opening a file
+// then deleting it so we have a backing store that goes away
+// when handle is closed or process crashes
+function tmpfd(callback) {
+  var name = "/tmp/" + crypto.randomBytes(4).readUInt32LE(0) + "." + crypto.randomBytes(4).readUInt32LE(0);
+  fs.open(name, "wx+", function (err, fd) {
+    if (err) {
+      console.log(name + " temporary file already exists, trying a different name");
+      return tmpfd(callback);
+    }
+    fs.unlink(name, function (err) {
+      if (err)
+        callback(err);
+      callback(null, fd);
+    });
+  });
+}
+
 function cache(pathname, cached_entry, callback) {
   var options = { 
     "host":config.varnish.host,
@@ -62,32 +81,47 @@ function cache(pathname, cached_entry, callback) {
       "X-REFRESH": "DOIT" //magic varnish setting
     }
   }
-  var req = http.request(options, function(res) {
-    var content_length = res.headers['content-length'] * 1
-    var buf = new Buffer(content_length); 
-    var pos = 0;
 
-    res.on('data', function (chunk) {
-      chunk.copy(buf, pos);
-      pos += chunk.length;
-    });
+  tmpfd(function (err, fd) {
+    if (err)
+      callback(err);
     
-    res.on('end', function () {
-      // per http://stackoverflow.com/questions/13790259/buffer-comparison-in-node-js
-      if (buf >= cached_entry.buffer && buf <= cached_entry.buffer) {
-        callback(null, null);
-      } else {
-        var msg = "Failed to verify cache " + pathname;
-        callback(new Error(msg));
-      }
+    cached_entry.fd = fd;
+    var req = http.request(options, function(res) {
+      var content_length = res.headers['content-length'] * 1
+      var md5Hash = crypto.createHash('md5');
+
+      res.on('data', function (chunk) {
+        fs.write(fd, chunk, 0, chunk.length, null, function (err) {
+          res.resume();
+        })
+        md5Hash.update(chunk);
+        res.pause();
+      });
+      
+      res.on('end', function () {
+        var buf = new Buffer(content_length);
+        fs.read(fd, buf, 0, content_length, 0, function (err, bytesRead, buf) {
+          fs.close(fd);
+          console.log(md5Hash.digest('base64'));
+          // per http://stackoverflow.com/questions/13790259/buffer-comparison-in-node-js
+          if (buf >= cached_entry.buffer && buf <= cached_entry.buffer) {
+            callback(null, null);
+          } else {
+            //todo, issue a http request to remove entry from varnish
+            var msg = "Failed to verify cache " + pathname;
+            callback(new Error(msg));
+          }
+        })
+      });
     });
-  });
 
-  req.on('error', function(e) {
-    callback(new Error('problem with request: ' + e.message));
-  });
+    req.on('error', function(e) {
+      callback(new Error('problem with request: ' + e.message));
+    });
 
-  req.end();
+    req.end();
+  })
 }
 
 function handlePut(request, response) {
