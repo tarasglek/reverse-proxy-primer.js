@@ -70,7 +70,6 @@ function tmpfd(callback) {
 }
 
 function cache(pathname, cached_entry, callback) {
-
   var options = { 
     "host":config.varnish.host,
     "port":config.varnish.port,
@@ -78,10 +77,12 @@ function cache(pathname, cached_entry, callback) {
     "headers":{
       "Accept-Encoding": "gzip",
       "Accept": "*/*",
+      "Host": cached_entry.headers["host"],
       "user-agent": "reverse.proxy.js",
       "X-REFRESH": "DOIT" //magic varnish setting
     }
   }
+
   var req = http.request(options, function(res) {
     var md5Hash = crypto.createHash('md5')
 
@@ -115,7 +116,9 @@ function handlePut(request, response) {
   if (!('content-md5' in request.headers)) {
     return xml_fail(request, response, 500, "Missing content-md5 header");
   }
-
+  if (!('host' in request.headers)) {
+    return xml_fail(request, response, 500, "Missing Host: header");
+  }
   if (!('authorization' in request.headers)) {
     return xml_fail(request, response, 403, "Forbidden: Missing Authorization header");
   }
@@ -166,10 +169,11 @@ function handlePut(request, response) {
     request.on('end', function() {
       var cached_entry = {"headers":{}, fd:fd, timestamp: start_timestamp}
       for (var header in request.headers) {
-        if (header.substr(0,8) == "content-")
+        if (header.substr(0,8) == "content-" || header == "host")
           cached_entry.headers[header] = request.headers[header]
       }
       objects[pathname] = cached_entry;
+
       cache(pathname, cached_entry, function (err) {
         if (cached_entry.fd)
           fs.close(fd);
@@ -199,7 +203,7 @@ function handleGet(request, response) {
   for (var header in cached_entry.headers)
     response.setHeader(header, cached_entry.headers[header]);
   
-  if (!("cache-control" in cached_entry.headersy))
+  if (!("cache-control" in cached_entry.headers))
     response.setHeader("Cache-Control", "public, max-age=31556926");
 
   if (request.method == "GET") {
@@ -229,6 +233,7 @@ function handleGet(request, response) {
 }
 
 http.createServer(function(request, response) {
+  console.log(request.method, request.headers);
   if (request.method == "PUT") {
     handlePut(request, response);
     return;
