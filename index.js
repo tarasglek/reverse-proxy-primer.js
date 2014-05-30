@@ -56,7 +56,7 @@ function extract_key_from_auth(auth) {
 // when handle is closed or process crashes
 function tmpfd(callback) {
   var name = "/tmp/" + crypto.randomBytes(4).readUInt32LE(0) + "." + crypto.randomBytes(4).readUInt32LE(0);
-  fs.open(name, "wx+", function (err, fd) {
+  fs.open(name, "w", function (err, fd) {
     if (err) {
       console.log(name + " temporary file already exists, trying a different name");
       return tmpfd(callback);
@@ -70,6 +70,7 @@ function tmpfd(callback) {
 }
 
 function cache(pathname, cached_entry, callback) {
+
   var options = { 
     "host":config.varnish.host,
     "port":config.varnish.port,
@@ -81,53 +82,40 @@ function cache(pathname, cached_entry, callback) {
       "X-REFRESH": "DOIT" //magic varnish setting
     }
   }
+  var req = http.request(options, function(res) {
+    var md5Hash = crypto.createHash('md5')
 
-  tmpfd(function (err, fd) {
-    if (err)
-      callback(err);
+    res.on('data', function (chunk) {
+      md5Hash.update(chunk);
+    });
     
-    cached_entry.fd = fd;
-    var req = http.request(options, function(res) {
-      var content_length = res.headers['content-length'] * 1
-      var md5Hash = crypto.createHash('md5');
-
-      res.on('data', function (chunk) {
-        fs.write(fd, chunk, 0, chunk.length, null, function (err) {
-          res.resume();
-        })
-        md5Hash.update(chunk);
-        res.pause();
-      });
-      
-      res.on('end', function () {
-        var buf = new Buffer(content_length);
-        fs.read(fd, buf, 0, content_length, 0, function (err, bytesRead, buf) {
-          fs.close(fd);
-          console.log(md5Hash.digest('base64'));
-          // per http://stackoverflow.com/questions/13790259/buffer-comparison-in-node-js
-          if (buf >= cached_entry.buffer && buf <= cached_entry.buffer) {
-            callback(null, null);
-          } else {
-            //todo, issue a http request to remove entry from varnish
-            var msg = "Failed to verify cache " + pathname;
-            callback(new Error(msg));
-          }
-        })
-      });
+    res.on('end', function () {
+      var hashDigest = md5Hash.digest('base64');
+      if (hashDigest == cached_entry.headers["content-md5"]) {
+        callback(null, null);
+      } else {
+        // todo issue a request to drop corrupt entry
+        var msg = "Failed to verify cache " + pathname;
+        callback(new Error(msg));
+      }
     });
+  });
 
-    req.on('error', function(e) {
-      callback(new Error('problem with request: ' + e.message));
-    });
+  req.on('error', function(e) {
+    callback(new Error('problem with request: ' + e.message));
+  });
 
-    req.end();
-  })
+  req.end();
 }
 
 function handlePut(request, response) {
   if (!('content-length' in request.headers)) {
     return xml_fail(request, response, 500, "Missing content-length header");
   }
+  if (!('content-md5' in request.headers)) {
+    return xml_fail(request, response, 500, "Missing content-md5 header");
+  }
+
   if (!('authorization' in request.headers)) {
     return xml_fail(request, response, 403, "Forbidden: Missing Authorization header");
   }
@@ -158,53 +146,86 @@ function handlePut(request, response) {
   if (bucket_rules.accessKeyId != accessKeyId)
     return xml_fail(request, response, 403, "Forbidden: Auth failed");
 
-  var content_length = request.headers['content-length'] * 1
-  var buf = new Buffer(content_length); 
-  var start_timestamp = Date.now()
-  var pos = 0;
-  request.on('data', function(chunk) {
-    chunk.copy(buf, pos);
-    pos += chunk.length;
-  }) 
-  request.on('end', function() {
-    var cached_entry = {"headers":{}, buffer:buf, timestamp: start_timestamp}
-    for (var header in request.headers) {
-      if (header.substr(0,8) == "content-")
-        cached_entry.headers[header] = request.headers[header]
-    }
-    objects[pathname] = cached_entry;
-    cache(pathname, cached_entry, function (err) {
-      if (!err) {
-        response.writeHead(200, {"Content-Length":0});
-        console.log(logentry(request, 200,
-                             cached_entry.headers["content-length"] + "b in " 
-                             + (Date.now() - cached_entry.timestamp) + "ms"));
 
-        response.end();
-      } else {
-        fail(request, response, 500, err.toString());
+  var start_timestamp = Date.now()
+
+  tmpfd(function (err, fd) {
+    if (err) {
+      return xml_fail(request, response, 500, err.toString());
+    }
+
+    request.on('data', function(chunk) {
+      fs.write(fd, chunk, 0, chunk.length, null, function (err) {
+        if (err) {
+          return xml_fail(request, response, 500, err.toString());
+        }
+        request.resume();
+      })
+      request.pause();
+    }) 
+    request.on('end', function() {
+      var cached_entry = {"headers":{}, fd:fd, timestamp: start_timestamp}
+      for (var header in request.headers) {
+        if (header.substr(0,8) == "content-")
+          cached_entry.headers[header] = request.headers[header]
       }
-      delete objects[pathname]
+      objects[pathname] = cached_entry;
+      cache(pathname, cached_entry, function (err) {
+        if (cached_entry.fd)
+          fs.close(fd);
+        if (!err) {
+          response.writeHead(200, {"Content-Length":0});
+          console.log(logentry(request, 200,
+                               cached_entry.headers["content-length"] + "b in " 
+                               + (Date.now() - cached_entry.timestamp) + "ms"));
+
+          response.end();
+        } else {
+          xml_fail(request, response, 500, err.toString());
+        }
+        delete objects[pathname]
+      });
     });
-  });
+  })
 }
+
 
 function handleGet(request, response) {
   var pathname = url.parse(request.url).pathname;
   if (!(pathname in objects))
     return fail(request, response, 404, "Can't find " + pathname);
   var cached_entry = objects[pathname];
-  var headers = {"Cache-Control": "public, max-age=31556926"};
-  for (var header in cached_entry.headers)
-    headers[header] = cached_entry.headers[header]
 
-  response.writeHead(200, headers);
-  if (request.method == "GET")
-    response.write(cached_entry.buffer);
-  response.end();
-  console.log(logentry(request, 200,
-                       cached_entry.headers["content-length"] + "b in " 
-                       + (Date.now() - cached_entry.timestamp) + "ms"));
+  for (var header in cached_entry.headers)
+    response.setHeader(header, cached_entry.headers[header]);
+  
+  if (!("cache-control" in cached_entry.headersy))
+    response.setHeader("Cache-Control", "public, max-age=31556926");
+
+  if (request.method == "GET") {
+    // nodejs supports passing fd via options, but don't want to debug weirdness there
+    var readStream = fs.createReadStream("/proc/self/fd/" + cached_entry.fd);
+    readStream.on("open", function (new_fd) {
+      console.log(new_fd, cached_entry.fd);
+      fs.close(cached_entry.fd);
+      delete cached_entry.fd;
+      readStream.pipe(response);
+    });
+    readStream.on("error", function (err) {
+      return fail(request, response, 500, err.toString());
+    });
+    readStream.on("end", function () {
+      console.log(logentry(request, 200,
+                           cached_entry.headers["content-length"] + "b in " 
+                           + (Date.now() - cached_entry.timestamp) + "ms"));
+    });
+  } else {
+    response.end();
+    
+    console.log(logentry(request, 200,
+                         "0b in " 
+                         + (Date.now() - cached_entry.timestamp) + "ms"));
+  }
 }
 
 http.createServer(function(request, response) {
