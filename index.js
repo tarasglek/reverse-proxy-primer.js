@@ -54,12 +54,12 @@ function extract_key_from_auth(auth) {
 // do the unix trick of opening a file
 // then deleting it so we have a backing store that goes away
 // when handle is closed or process crashes
-function tmpfd(callback) {
-  var name = "/tmp/" + crypto.randomBytes(4).readUInt32LE(0) + "." + crypto.randomBytes(4).readUInt32LE(0);
+function tmpfd(name, callback) {
+  var name = "/tmp/" + name + crypto.randomBytes(4).readUInt32LE(0) + "." + crypto.randomBytes(4).readUInt32LE(0);
   fs.open(name, "w", function (err, fd) {
     if (err) {
       console.log(name + " temporary file already exists, trying a different name");
-      return tmpfd(callback);
+      return tmpfd(name, callback);
     }
     fs.unlink(name, function (err) {
       if (err)
@@ -96,7 +96,8 @@ function cache(pathname, cached_entry, callback) {
         callback(null, null);
       } else {
         // todo issue a request to drop corrupt entry
-        var msg = "Failed to verify cache " + pathname;
+        var msg = "Failed to verify cache " + pathname+";";
+        msg = hashDigest + "!="+cached_entry.headers["content-md5"]
         callback(new Error(msg));
       }
     });
@@ -104,6 +105,10 @@ function cache(pathname, cached_entry, callback) {
 
   req.on('error', function(e) {
     callback(new Error('problem with request: ' + e.message));
+  });
+
+  req.setTimeout(1000, function() {
+    callback(new Error("varnish GET timeout"));
   });
 
   req.end();
@@ -122,12 +127,16 @@ function handlePut(request, response) {
   if (!('authorization' in request.headers)) {
     return xml_fail(request, response, 403, "Forbidden: Missing Authorization header");
   }
-  
+
   var accessKeyId = extract_key_from_auth(request.headers['authorization'].toString());
   if (!accessKeyId)
     return xml_fail(request, response, 403, "Forbidden: Can't parse Authorization header");
   
-  var pathname = url.parse(request.url).pathname;
+  var pathname = request.url;
+
+  if (pathname in objects) {
+    return xml_fail(request, response, 403, "Forbidden: Concurrent uploads are forbidden: "+pathname);
+  }
 
   var a = pathname.split("/");
 
@@ -152,7 +161,7 @@ function handlePut(request, response) {
 
   var start_timestamp = Date.now()
 
-  tmpfd(function (err, fd) {
+  tmpfd(pathname.replace(/[^A-z]/g, "-"), function (err, fd) {
     if (err) {
       return xml_fail(request, response, 500, err.toString());
     }
@@ -175,8 +184,10 @@ function handlePut(request, response) {
       objects[pathname] = cached_entry;
 
       cache(pathname, cached_entry, function (err) {
-        if (cached_entry.fd)
-          fs.close(fd);
+        if (cached_entry.fd) {
+          fs.close(cached_entry.fd);
+          delete cached_entry.fd
+        }
         if (!err) {
           response.writeHead(200, {"Content-Length":0});
           console.log(logentry(request, 200,
@@ -233,7 +244,7 @@ function handleGet(request, response) {
 }
 
 http.createServer(function(request, response) {
-  console.log(request.method, request.headers);
+  console.log(request.method, request.url, request.headers);
   if (request.method == "PUT") {
     handlePut(request, response);
     return;

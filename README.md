@@ -32,7 +32,10 @@ curl http://localhost:6081/foo-bucket/README.md
 * Eg 'Accept: */*' matters
 * Solution to this and other issues is forced expiry for warming cache. See Configuration section below
 
+memory storage seems to result in a lot of problems.
+persistent storage sucks too(failed to recover, segfaulted)
 
 # Configuration
 
 https://www.varnish-cache.org/trac/wiki/VCLExampleHashAlwaysMiss
+
