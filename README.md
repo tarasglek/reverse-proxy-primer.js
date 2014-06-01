@@ -39,3 +39,9 @@ persistent storage sucks too(failed to recover, segfaulted)
 
 https://www.varnish-cache.org/trac/wiki/VCLExampleHashAlwaysMiss
 
+# Docker
+```
+cd docker
+docker.io build .
+docker.io run -p 6081:6081 <image> 
+```
